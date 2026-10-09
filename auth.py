@@ -2,10 +2,14 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from database import execute, query
 
+
+# --------------------------------------------------
+# PASSWORD SECURITY
+# --------------------------------------------------
 
 def hash_password(password):
     salt = secrets.token_hex(16)
@@ -37,6 +41,10 @@ def verify_password(password, stored_hash):
         return False
 
 
+# --------------------------------------------------
+# SIGN UP
+# --------------------------------------------------
+
 def signup(business_name, full_name, username, password, currency="PKR"):
     business_name = business_name.strip()
     full_name = full_name.strip()
@@ -54,7 +62,7 @@ def signup(business_name, full_name, username, password, currency="PKR"):
     ):
         raise ValueError("This username is already registered.")
 
-    now = datetime.now().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     business_id = execute(
         """
@@ -90,6 +98,10 @@ def signup(business_name, full_name, username, password, currency="PKR"):
     return business_id
 
 
+# --------------------------------------------------
+# LOGIN
+# --------------------------------------------------
+
 def login(username, password):
     username = username.strip().lower()
 
@@ -116,3 +128,82 @@ def login(username, password):
 
     user.pop("password_hash", None)
     return user
+
+
+# --------------------------------------------------
+# PERSISTENT LOGIN SESSIONS
+# --------------------------------------------------
+
+def create_login_session(user_id, days=30):
+    # The raw token is returned to the app.
+    # Only its SHA-256 hash is stored in the database.
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+    now = datetime.now(timezone.utc)
+
+    execute(
+        """
+        INSERT INTO login_sessions
+        (token_hash, user_id, created_at, expires_at)
+        VALUES (:token_hash, :user_id, :created_at, :expires_at)
+        """,
+        {
+            "token_hash": token_hash,
+            "user_id": user_id,
+            "created_at": now.isoformat(),
+            "expires_at": (
+                now + timedelta(days=days)
+            ).isoformat()
+        }
+    )
+
+    return token
+
+
+def get_session_user(token):
+    if not token:
+        return None
+
+    token_hash = hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    users = query(
+        """
+        SELECT u.id, u.business_id, u.username,
+               u.full_name, u.role
+        FROM login_sessions AS s
+        JOIN users AS u ON u.id = s.user_id
+        WHERE s.token_hash = :token_hash
+          AND s.expires_at > :now
+          AND u.active = 1
+        """,
+        {
+            "token_hash": token_hash,
+            "now": now
+        }
+    )
+
+    return users[0] if users else None
+
+
+def revoke_login_session(token):
+    if not token:
+        return
+
+    token_hash = hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+    execute(
+        """
+        DELETE FROM login_sessions
+        WHERE token_hash = :token_hash
+        """,
+        {"token_hash": token_hash}
+    )
