@@ -12,7 +12,11 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 from database import init_db, query, execute
-from auth import signup, login, hash_password
+from auth import (
+    signup, login, hash_password,
+    create_login_session, get_session_user, revoke_login_session,
+)
+from streamlit_cookies_manager import EncryptedCookieManager
 
 init_db()
 
@@ -21,6 +25,21 @@ st.set_page_config(
     page_icon="🌊",
     layout="wide"
 )
+
+# ---------------- Persistent login cookie ----------------
+cookie_password = st.secrets.get("COOKIE_PASSWORD", "")
+if not cookie_password:
+    st.error("COOKIE_PASSWORD is missing from Streamlit Secrets.")
+    st.stop()
+
+cookies = EncryptedCookieManager(
+    prefix="bizflow/",
+    password=cookie_password,
+)
+
+# The cookie manager needs a browser round-trip before cookies are available.
+if not cookies.ready():
+    st.stop()
 
 st.markdown("""
 <style>
@@ -172,6 +191,19 @@ def create_invoice_pdf(invoice, business, items):
 if "user" not in st.session_state:
     st.session_state.user = None
 
+# Restore the logged-in user from the browser cookie when Streamlit's
+# in-memory session is new or has been restarted.
+if not st.session_state.user:
+    saved_token = cookies.get("bizflow_session", "")
+    if saved_token:
+        restored_user = get_session_user(saved_token)
+        if restored_user:
+            st.session_state.user = restored_user
+        else:
+            # Remove an expired or invalid token from this browser.
+            cookies["bizflow_session"] = ""
+            cookies.save()
+
 if not st.session_state.user:
     st.markdown("""
     <div class="hero">
@@ -193,6 +225,9 @@ if not st.session_state.user:
         if submitted:
             user = login(username, password)
             if user:
+                token = create_login_session(user["id"])
+                cookies["bizflow_session"] = token
+                cookies.save()
                 st.session_state.user = user
                 st.rerun()
             else:
@@ -258,6 +293,12 @@ with st.sidebar:
     )
 
     if st.button("Sign out", use_container_width=True):
+        token = cookies.get("bizflow_session", "")
+        if token:
+            revoke_login_session(token)
+
+        cookies["bizflow_session"] = ""
+        cookies.save()
         st.session_state.user = None
         st.rerun()
 
