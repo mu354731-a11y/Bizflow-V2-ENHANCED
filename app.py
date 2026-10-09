@@ -262,8 +262,8 @@ if not st.session_state.user:
                     st.success("Account created! Now sign in.")
                 except ValueError as error:
                     st.error(str(error))
-                except Exception:
-                    st.error("Could not create the account. Try another username.")
+                except Exception as error:
+    st.error(f"Signup failed: {type(error).__name__}: {error}")
 
     st.stop()
 
